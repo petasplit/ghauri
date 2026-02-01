@@ -56,47 +56,88 @@ def inject_expression(
     if conf.timeout and conf.timeout > 30:
         timeout = conf.timeout
     if not connection_test:
-        if injection_type == "HEADER":
-            attack_headers = prepare_attack_request(
-                headers,
-                expression,
-                param=parameter,
-                injection_type=injection_type,
+            if injection_type == "HEADER":
+        attack_headers = prepare_attack_request(
+            headers,
+            expression,
+            param=parameter,
+            injection_type=injection_type,
+        )
+    if injection_type == "COOKIE":
+        if not conf._is_cookie_choice_taken and not conf.skip_urlencoding:
+            choice = logger.read_input(
+                "do you want to URL encode cookie values (implementation specific)? [Y/n] ",
+                batch=conf.batch,
+                user_input="Y",
             )
-        if injection_type == "COOKIE":
-            if not conf._is_cookie_choice_taken and not conf.skip_urlencoding:
-                choice = logger.read_input(
-                    "do you want to URL encode cookie values (implementation specific)? [Y/n] ",
-                    batch=conf.batch,
-                    user_input="Y",
-                )
-                if choice and choice != "n":
-                    conf._encode_cookie = True
-                conf._is_cookie_choice_taken = True
-            attack_headers = prepare_attack_request(
-                headers,
-                expression,
-                param=parameter,
-                encode=conf._encode_cookie,
-                injection_type=injection_type,
-            )
-        if injection_type == "GET":
-            attack_url = prepare_attack_request(
-                url,
-                expression,
-                param=parameter,
-                encode=True,
-                injection_type=injection_type,
-            )
+            if choice and choice != "n":
+                conf._encode_cookie = True
+            conf._is_cookie_choice_taken = True
+        attack_headers = prepare_attack_request(
+            headers,
+            expression,
+            param=parameter,
+            encode=conf._encode_cookie,
+            injection_type=injection_type,
+        )
+    if injection_type == "GET":
+        attack_url = prepare_attack_request(
+            url,
+            expression,
+            param=parameter,
+            encode=True,
+            injection_type=injection_type,
+        )
+    if injection_type == "POST":
+        attack_data = prepare_attack_request(
+            data,
+            expression,
+            param=parameter,
+            encode=True,
+            injection_type=injection_type,
+        )
 
-        if injection_type == "POST":
-            attack_data = prepare_attack_request(
-                data,
-                expression,
-                param=parameter,
-                encode=True,
-                injection_type=injection_type,
-            )
+    # ────────────────────────────────────────────────
+    # CUSTOM MUTATORS – APPLY HERE
+    # ────────────────────────────────────────────────
+    final_payload = None
+    if injection_type == "GET":
+        final_payload = attack_url
+    elif injection_type == "POST":
+        final_payload = attack_data
+    elif injection_type in ("HEADER", "COOKIE"):
+        final_payload = attack_headers.get(parameter.name, "") if attack_headers and parameter else ""
+
+    if final_payload:
+        mutated = apply_mutators(final_payload, context={
+            "content_type": attack_headers.get("Content-Type", "") if attack_headers else "",
+            "method": "GET" if injection_type == "GET" else "POST",
+            "injection_type": injection_type,
+            "param": parameter.name if parameter else None,
+            "url": attack_url,
+        })
+
+        # Re-inject mutated payload back
+        if injection_type == "GET":
+            attack_url = mutated
+        elif injection_type == "POST":
+            attack_data = mutated
+        elif injection_type in ("HEADER", "COOKIE"):
+            attack_headers[parameter.name] = mutated
+
+    # ────────────────────────────────────────────────
+    # Continue with original request
+    # ────────────────────────────────────────────────
+    try:
+        attack = request.perform(
+            url=attack_url,
+            data=attack_data,
+            proxy=conf.proxy,
+            headers=attack_headers,
+            connection_test=connection_test,
+            is_multipart=conf.is_multipart,
+            timeout=timeout,
+        )
     try:
         attack = request.perform(
             url=attack_url,
